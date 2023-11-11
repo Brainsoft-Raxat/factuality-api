@@ -12,7 +12,7 @@ router = APIRouter()
 
 
 @router.post("/task/submit", status_code=status.HTTP_202_ACCEPTED, responses={
-    200: {"description": "Submit task", "model": SubmitTaskResponse}
+    202: {"description": "Submit task", "model": SubmitTaskResponse}
 })
 async def submit_task(
         request: ScoreRequest,
