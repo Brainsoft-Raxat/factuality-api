@@ -66,6 +66,13 @@ def process_task(db: Session, task_id: uuid.UUID):
         db_task.response = response
         db_task = update_task(db, db_task)
 
+    except HTTPException as e:
+        db_task.status = models.TaskStatus.FAILED
+        db_task.error = {
+            "message": e.detail
+        }
+        update_task(db, db_task)
+
     except Exception as e:
         db_task.status = models.TaskStatus.FAILED
         db_task.error = {
@@ -103,6 +110,10 @@ def score(db: Session, url: str):
                 break
             try:
                 feed_article = parse_article(feed_url)
+            except HTTPException as e:
+                logger.error(
+                    f"Failed to parse feed article {feed_url}: {e.detail}")
+                continue
             except Exception as e:
                 logger.error(
                     f"Failed to parse feed article {feed_url}: {str(e)}")
@@ -338,32 +349,27 @@ def update_article(db: Session, article_id: str, article_data: ArticleCreate):
 
 
 def parse_article(url: str):
-    try:
-        article = newspaper.Article(url=url)
-        article.download()
-        article.parse()
-        if not article.is_valid_url():
-            raise HTTPException(status_code=400, detail="Invalid URL")
+    article = newspaper.Article(url=url)
+    article.download()
+    article.parse()
+    if not article.is_valid_url():
+        raise HTTPException(status_code=500, detail="Invalid URL")
 
-        if not article.is_valid_body():
-            raise HTTPException(status_code=400, detail="")
+    if not article.is_valid_body():
+        raise HTTPException(
+            status_code=500, detail=f'article content is not valid. this is what was parsed: {article.text}')
 
-        return article
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return article
 
 
 def parse_feed(url: str) -> list:
-    try:
-        articles = []
-        urls_set = set()
-        feed = newspaper.build(url, memoize_articles=False)
-        for article in feed.articles:
-            raw_article = newspaper.Article(url=article.url)
-            if raw_article.is_valid_url() and not is_external(url=article.url, reference=url, ignore_suffix=True) and raw_article.url not in urls_set:
-                urls_set.add(raw_article.url)
-                articles.append(raw_article.url)
+    articles = []
+    urls_set = set()
+    feed = newspaper.build(url, memoize_articles=False)
+    for article in feed.articles:
+        raw_article = newspaper.Article(url=article.url)
+        if raw_article.is_valid_url() and not is_external(url=article.url, reference=url, ignore_suffix=True) and raw_article.url not in urls_set:
+            urls_set.add(raw_article.url)
+            articles.append(raw_article.url)
 
-        return articles
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return articles
