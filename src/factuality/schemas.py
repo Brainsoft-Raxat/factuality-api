@@ -1,10 +1,12 @@
 from uuid import UUID
 from typing import Optional
 
-from pydantic import BaseModel, field_validator
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator, UUID4
 
 from courlan import validate_url, scrub_url
+
+class TaskID(BaseModel):
+    task_id: UUID4
 
 
 class ScoreRequest(BaseModel):

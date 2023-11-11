@@ -1,7 +1,7 @@
 import courlan
 from fastapi import APIRouter, status, Depends, BackgroundTasks, HTTPException
 
-from .schemas import ScoreRequest
+from .schemas import ScoreRequest, TaskID
 from . import service
 from src.dependencies import get_db
 from src import models
@@ -25,8 +25,8 @@ async def submit_task(
 
 
 @router.get("/task/{task_id}", status_code=status.HTTP_200_OK)
-def get_task(task_id: str, db: Session = Depends(get_db)):
-    db_task = service.get_task(db, task_id)
+def get_task(task_id: TaskID = Depends(), db: Session = Depends(get_db)):
+    db_task = service.get_task(db, str(task_id.task_id))
 
     if db_task is None:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -37,6 +37,7 @@ def get_task(task_id: str, db: Session = Depends(get_db)):
         return {"status": db_task.status, "error": db_task.error}
 
     return {"status": db_task.status}
+
 
 @router.get("/feed")
 def parse_feed(request: ScoreRequest):
