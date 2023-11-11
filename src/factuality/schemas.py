@@ -43,3 +43,22 @@ class ArticleCreate(BaseModel):
         if not ok:
             raise ValueError("Invalid URL")
         return scrub_url(v)
+
+class Score(BaseModel):
+    label0: float
+    label1: float
+    label2: float
+class ScoreData(BaseModel):
+    article: Score
+    site: Score
+
+class ErrorDetail(BaseModel):
+    message: str
+class GetTaskResponse(BaseModel):
+    status: str
+    data: Optional[ScoreData] = None
+    error: Optional[ErrorDetail] = None
+
+class SubmitTaskResponse(BaseModel):
+    task_id: str
+    message: str
