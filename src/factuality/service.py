@@ -352,8 +352,9 @@ def parse_article(url: str):
     article = newspaper.Article(url=url)
     article.download()
     article.parse()
-    if not article.is_valid_url():
-        raise HTTPException(status_code=500, detail="Invalid URL")
+    
+    # if not article.is_valid_url():
+    #     raise HTTPException(status_code=500, detail="Invalid URL")
 
     if not article.is_valid_body():
         raise HTTPException(
