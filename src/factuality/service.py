@@ -356,9 +356,9 @@ def parse_article(url: str):
     # if not article.is_valid_url():
     #     raise HTTPException(status_code=500, detail="Invalid URL")
 
-    if not article.is_valid_body():
-        raise HTTPException(
-            status_code=500, detail=f'article content is not valid. this is what was parsed: {article.text}')
+    # if not article.is_valid_body():
+    #     raise HTTPException(
+    #         status_code=500, detail=f'article content is not valid. this is what was parsed: {article.text}')
 
     return article
 
