@@ -86,17 +86,17 @@ def score(db: Session, url: str):
 
     # TODO: Delete
     base = {
-        'bbc.com/hindi': {
+        'russian.rt.com': {
             "label0": 0.10,
             "label1": 0.22,
             "label2": 0.68,
         },
-        'news.cn': {
+        'bbc.com/hindi': {
             "label0": 0.80,
             "label1": 0.16,
             "label2": 0.04,
         },
-        'russian.rt.com': {
+        'news.cn': {
             "label0": 0.20,
             "label1": 0.78,
             "label2": 0.02,
