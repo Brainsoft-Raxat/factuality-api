@@ -1,411 +1,249 @@
-import math
-import time
+import logging
 import uuid
 import random
+import re
+import json
 from typing import List
 
-from fastapi import HTTPException, status
+
 from courlan import get_base_url, is_external
 import newspaper
+import trafilatura
 from sqlalchemy.orm import Session
+from lingua import Language, LanguageDetectorBuilder
 
 
 import src.models as models
 from src.factuality.schemas import ArticleCreate
 from src.factuality_model.client import Client
 from src.utils import logger
+import src.db.task as db_task
+import src.db.site as db_site
+import src.db.article as db_article
 
 MAX_FEED_ARTICLES = 10
-
-
-def create_task(db: Session, request: dict) -> models.Task:
-    try:
-        task = models.Task(
-            id=uuid.uuid4(),
-            status=models.TaskStatus.PENDING,
-            request=request,
-        )
-        db.add(task)
-        db.commit()
-        db.refresh(task)
-        return task
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
-
-
-def update_task(db: Session, task: models.Task) -> models.Task:
-    try:
-        db.add(task)
-        db.commit()
-        db.refresh(task)
-        return task
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
-
-
-def get_task(db: Session, task_id: uuid.UUID) -> models.Task:
-    return db.query(models.Task).filter(models.Task.id == task_id).first()
+SUPPORTED_LANGS = ['en', 'ru', 'hi', 'zh-cn', 'kk']
 
 
 def process_task(db: Session, task_id: uuid.UUID):
-    db_task = get_task(db, task_id=task_id)
+    task = db_task.get_task(db, task_id=task_id)
 
-    if db_task is None:
+    if task is None:
         return
 
     try:
-        db_task.status = models.TaskStatus.IN_PROGRESS
-        db_task = update_task(db, db_task)
-        response = score(db, db_task.request['url'])
+        task.status = models.TaskStatus.IN_PROGRESS
+        task = db_task.update_task(db, task)
+        response = score(db, task.request['url'])
 
-        db_task.status = models.TaskStatus.COMPLETED
-        db_task.response = response
-        db_task = update_task(db, db_task)
-
-    except HTTPException as e:
-        db_task.status = models.TaskStatus.FAILED
-        db_task.error = {
-            "message": e.detail
-        }
-        update_task(db, db_task)
+        task.status = models.TaskStatus.COMPLETED
+        task.response = response
+        task = db_task.update_task(db, task)
 
     except Exception as e:
-        db_task.status = models.TaskStatus.FAILED
-        db_task.error = {
+        task.status = models.TaskStatus.FAILED
+        task.error = {
             "message": str(e)
         }
-        update_task(db, db_task)
+        db_task.update_task(db, task)
 
 
 def score(db: Session, url: str):
+    logger.info(f"Scoring article at URL: {url}")
     base_url = get_base_url(url)
 
-    # TODO: Delete
-    base = {
-        'russian.rt.com': {
-            "label0": 0.10,
-            "label1": 0.22,
-            "label2": 0.68,
-        },
-        'bbc.com/hindi': {
-            "label0": 0.80,
-            "label1": 0.16,
-            "label2": 0.04,
-        },
-        'news.cn': {
-            "label0": 0.20,
-            "label1": 0.78,
-            "label2": 0.02,
-        }
-    }
+    site = db_site.get_site(db, url=base_url)
+    if site:
+        logger.info(f"Found existing site with ID: {site.id}")
 
-    for b, val in base.items():
-        if b in url:
-            modified_scores = {
-                "label0": val["label0"] + random.uniform(-0.01, 0.01),
-                "label1": val["label1"] + random.uniform(-0.01, 0.01),
-                "label2": val["label2"] + random.uniform(-0.01, 0.01)
-            }
-            return {
-                "article": modified_scores,
-                "site": val
-            }
+    article = db_article.get_article(db, url)
 
-    db_site = get_site(db, url=base_url)
-    db_article = get_article(db, url)
+    if site and article and site.scores is not None and article.is_scored:
+        logger.info("Article already scored.")
+        return {"site": site.scores, "article": article.scores}
 
-    if db_site and db_article and db_site.scores is not None and db_article.is_scored:
-        return {"site": db_site.scores, "article": db_article.scores}
+    parsed_article = parse_article(url)
+    parsed_articles = [parsed_article]
 
-    article = parse_article(url)
+    if site is None:
+        site = db_site.create_site(db, url=base_url)
 
-    articles = [article]
+    if site and site.scores is None:
+        feed_articles = parse_feed(base_url=base_url, url=url)
 
-    if db_site is None:
-        db_site = create_site(db, url=base_url)
+        parsed_articles.extend(feed_articles)
 
-    if db_site and db_site.scores is None:
-        feed_urls = parse_feed(url=base_url)
-        if len(feed_urls) == 0:
-            feed_urls = parse_feed(url)
-
-        random.shuffle(feed_urls)
-
-        i = 0
-        for feed_url in feed_urls:
-            if i >= MAX_FEED_ARTICLES:
-                break
-            try:
-                feed_article = parse_article(feed_url)
-                if feed_article.text == "":
-                    raise HTTPException(
-                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="empty article")
-
-            except HTTPException as e:
-                logger.error(
-                    f"Failed to parse feed article {feed_url}: {e.detail}")
-                continue
-            except Exception as e:
-                logger.error(
-                    f"Failed to parse feed article {feed_url}: {str(e)}")
-                continue
-
-            i += 1
-            articles.append(feed_article)
-
-    input_texts: List[str] = [article.text for article in articles]
+    input_texts: List[str] = [parsed_article['text']
+                              for parsed_article in parsed_articles]
 
     model = Client()
 
-    max_chunk_length = 500
-    chunked_texts = []
-
-    for text in input_texts:
-        if len(text) > max_chunk_length:
-            chunks = [text[i:i + max_chunk_length]
-                      for i in range(0, len(text), max_chunk_length)]
-            chunked_texts.extend(chunks)
-        else:
-            chunked_texts.append(text)
-
-    max_batch_size = 100
     resulting_scores = []
 
-    for i in range(0, len(chunked_texts), max_batch_size):
-        chunk = chunked_texts[i:i + max_batch_size]
-        payload = {
-            "inputs": chunk,
-            "parameters": {
-                'padding': True,
-                'truncation': True,
-                'max_length': 512
-            }
-        }
+    for i, input_text in enumerate(input_texts):
+        payload = {"inputs": input_text}
 
-        max_retries = 3
-        retry_count = 0
-        while retry_count < max_retries:
-            try:
-                response = model.score_articles(payload)
-                if response.status_code != 200:
-                    err = response.json()
-                    if 'estimated_time' in err:
-                        time.sleep(err['estimated_time'])
-                        raise HTTPException(
-                            status_code=500,
-                            detail=err
-                        )
+        try:
+            response = model.score_articles(payload)
+            logger.info(f"Successfully scored article {
+                        i+1}/{len(input_texts)}")
+            if response:
+                score_dict = {"label0": 0.0, "label1": 0.0, "label2": 0.0}
+                for item in response[0]:
+                    if item['label'] == 'contradiction':
+                        score_dict['label0'] = item['score']
+                    elif item['label'] == 'neutral':
+                        score_dict['label1'] = item['score']
+                    elif item['label'] == 'entailment':
+                        score_dict['label2'] = item['score']
+                resulting_scores.append(score_dict)
+            else:
+                resulting_scores.append(
+                    {"label0": 0.0, "label1": 0.0, "label2": 0.0})
+        except Exception as e:
+            if i == 0:
+                logger.error(f"Error scoring article {
+                             i+1}/{len(input_texts)}: {str(e)}")
+                raise Exception(f"Failed to get results from model: {str(e)}")
+            else:
+                logger.error(f"Error scoring article {
+                             i+1}/{len(input_texts)}: {str(e)}")
+                resulting_scores.append(
+                    {"label0": 0.0, "label1": 0.0, "label2": 0.0})
 
-                response = response.json()
-                resulting_scores.extend(response)
-                break
-            except HTTPException as e:
-                retry_count += 1
-                if retry_count == max_retries:
-                    raise HTTPException(
-                        status_code=500,
-                        detail=f"Failed after {max_retries} retries. Last error: {str(e)}")
-
-    average_scores = []
-    current_index = 0
-
-    for text in input_texts:
-        if len(text) > max_chunk_length:
-            num_chunks = math.ceil(len(text) / max_chunk_length)
-            scores_chunked = resulting_scores[current_index: current_index + num_chunks]
-
-            average_score = {
-                "label0": 0.0,
-                "label1": 0.0,
-                "label2": 0.0,
-            }
-
-            for score_chunked in scores_chunked:
-                average_score["label0"] += score_chunked[0]['score']
-                average_score["label1"] += score_chunked[1]['score']
-                average_score["label2"] += score_chunked[2]['score']
-
-            sum_of_scores = average_score["label0"] + \
-                average_score["label1"] + average_score["label2"]
-
-            average_score["label0"] = average_score['label0']/sum_of_scores
-            average_score["label1"] = average_score['label1']/sum_of_scores
-            average_score["label2"] = average_score['label2']/sum_of_scores
-
-            average_scores.append(average_score)
-            current_index += num_chunks
-        else:
-            average_score = {
-                "label0": resulting_scores[current_index][2]['score'],
-                "label1": resulting_scores[current_index][1]['score'],
-                "label2": resulting_scores[current_index][0]['score'],
-            }
-            average_scores.append(resulting_scores[current_index])
-            current_index += 1
-
-    if len(articles) != len(average_scores):
-        min_length = min(len(articles), len(average_scores))
-        articles = articles[:min_length]
-        average_scores = average_scores[:min_length]
+    logger.info("Article scoring completed.")
 
     articles_data: List[ArticleCreate] = []
-    for i, article in enumerate(articles):
-        article_data = ArticleCreate(
-            site_id=db_site.id,
-            url=article.url,
-            title=article.title,
-            author=", ".join(article.authors),
-            content=article.text,
-            is_scored=True,
-            scores=average_scores[i]
-        )
+    for i, parsed_article in enumerate(parsed_articles):
+        scores = resulting_scores[i]
+        if any(score > 0.0 for score in scores.values()):
+            article_data = {
+                'site_id': site.id,
+                'url': parsed_article['url'],
+                'lang': parsed_article['lang'],
+                'title': parsed_article['title'],
+                'author': parsed_article['authors'],
+                'content': parsed_article['text'],
+                'library': parsed_article['library'],
+                'is_scored': True,
+                'scores': scores
+            }
+            articles_data.append(article_data)
 
-        articles_data.append(article_data)
+    if len(resulting_scores) == 0:
+        raise Exception(
+            "failed to get model responses for articles. len(resulting_scores) = 0")
 
-    if len(average_scores) == 0:
-        raise HTTPException(
-            status_code=500, detail="failed to get model responses for articles. len(average_scores) = 0")
+    articles = db_article.create_articles(db, articles_data)
 
-    db_articles = create_articles(db, articles_data)
-
-    sums = {label: sum(average_score[label] for average_score in average_scores) for label in [
+    sums = {label: sum(score[label] for score in resulting_scores) for label in [
         'label0', 'label1', 'label2']}
 
-    if db_site.scores:
+    if site.scores:
         for label in sums:
-            sums[label] += db_site.scores[label]
+            sums[label] += site.scores[label]
 
     total = sum(sums.values())
 
     site_score = {label: sums[label] / total for label in sums}
 
-    db_site = update_site(db, db_site.id, new_scores=site_score)
+    site = db_site.update_site(db, site.id, new_scores=site_score)
 
     return {
-        "article": average_scores[0],
+        "article": resulting_scores[0],
         "site": site_score
     }
 
 
-def get_site(db: Session, url: str) -> models.Site:
-    return db.query(models.Site).filter(models.Site.url == url).first()
+def clean_text(text):
+    return re.sub(r'\s+', ' ', text).strip()
 
 
-def create_site(db: Session, url: str):
-    try:
-        db_site = models.Site(
-            id=uuid.uuid4(),
-            url=url,
-        )
-        db.add(db_site)
-        db.commit()
-        db.refresh(db_site)
-        return db_site
-    except Exception as e:
-        db.rollback()
-        raise e
-
-
-def update_site(db: Session, site_id: str, new_scores: dict):
-    try:
-        db_site = db.query(models.Site).filter(
-            models.Site.id == site_id).first()
-        if db_site:
-            db_site.scores = new_scores
-            db.commit()
-            db.refresh(db_site)
-            return db_site
-        else:
-            return None
-    except Exception as e:
-        db.rollback()
-        raise e
-
-
-def create_articles(db: Session, articles: List[ArticleCreate]):
-    try:
-        db_articles = []
-        for article in articles:
-            db_article = models.Article(
-                **article.model_dump(exclude_unset=True, exclude_none=True)
-            )
-            db_article.id = uuid.uuid4()
-            db.add(db_article)
-            db_articles.append(db_article)
-        db.commit()
-        return db_articles
-    except Exception as e:
-        db.rollback()
-        raise e
-
-
-def get_article(db: Session, url: str) -> models.Article:
-    return db.query(models.Article).filter(models.Article.url == url).first()
-
-
-def get_articles_by_urls(db: Session, urls: List[str]) -> List[str]:
-    return db.query(models.Article).filter(models.Article.url.in_(urls)).all()
-
-
-def create_article(db: Session, article: ArticleCreate) -> models.Article:
-    try:
-        db_article = models.Article(
-            **article.model_dump(exclude_unset=True, exclude_none=True)
-        )
-        db_article.id = uuid.uuid4()
-        db.add(db_article)
-        db.commit()
-        db.refresh(db_article)
-        return db_article
-    except Exception as e:
-        db.rollback()
-        raise e
-
-
-def update_article(db: Session, article_id: str, article_data: ArticleCreate):
-    try:
-        db_article = db.query(models.Article).filter(
-            models.Article.id == article_id).first()
-        if db_article:
-            for key, value in article_data.model_dump(exclude_unset=True, exclude_none=True).items():
-                setattr(db_article, key, value)
-            db.commit()
-            db.refresh(db_article)
-            return db_article
-        else:
-            return None
-    except Exception as e:
-        db.rollback()
-        raise e
+logger = logging.getLogger(__name__)
+SUPPORTED_LANGS = ['en', 'ru', 'hi', 'zh-cn', 'kk']
 
 
 def parse_article(url: str):
-    article = newspaper.Article(url=url)
-    article.download()
-    article.parse()
+    try:
+        article = newspaper.Article(url)
+        article.download()
+        article.parse()
+        text = clean_text(article.text)
+        lang = detect_language(text)
+        if lang not in SUPPORTED_LANGS:
+            raise Exception(f'Language {lang} not supported')
+        return {"library": "newspaper3k", 'title': article.title or "",
+                "text": text, "url": url, "authors": ', '.join(article.authors), "lang": lang}
+    except Exception as e:
+        logger.error(f"Error with newspaper3k for URL {url}: {e}")
 
-    # if not article.is_valid_url():
-    #     raise HTTPException(status_code=500, detail="Invalid URL")
+    try:
+        downloaded = trafilatura.fetch_url(url)
+        data = json.loads(trafilatura.extract(
+            downloaded, output_format="json", include_comments=False))
+        text = clean_text(data['text'])
+        lang = detect_language(text)
+        if lang not in SUPPORTED_LANGS:
+            raise Exception(f'Language {lang} not supported')
+        return {"library": "trafilatura", 'title': data.get('title', ""),
+                "text": text, "url": url, "authors": data.get('author', ""), "lang": lang}
+    except Exception as e:
+        logger.error(f"Error with trafilatura for URL {url}: {e}")
 
-    # if not article.is_valid_body():
-    #     raise HTTPException(
-    #         status_code=500, detail=f'article content is not valid. this is what was parsed: {article.text}')
-
-    return article
+    raise ValueError("Failed to parse the article with both libraries.")
 
 
-def parse_feed(url: str) -> list:
+def parse_feed(url: str, base_url: str = None) -> list:
     articles = []
     urls_set = set()
     feed = newspaper.build(url, memoize_articles=False)
-    for article in feed.articles:
-        raw_article = newspaper.Article(url=article.url)
-        if raw_article.is_valid_url() and not is_external(url=article.url, reference=url, ignore_suffix=True) and raw_article.url not in urls_set:
-            urls_set.add(raw_article.url)
-            articles.append(raw_article.url)
+
+    articles_list = list(feed.articles)
+    random.shuffle(articles_list)
+
+    for article in articles_list:
+
+        if len(articles) >= MAX_FEED_ARTICLES:
+            break
+
+        if article.is_valid_url() and not is_external(url=article.url, reference=url, ignore_suffix=True) and article.url not in urls_set:
+            urls_set.add(article.url)
+
+        try:
+            parsed_article = parse_article(article.url)
+            if parsed_article and parsed_article['text']:
+                articles.append(parsed_article)
+        except ValueError as e:
+            logger.error(f"Error parsing article {article.url}: {e}")
+
+    if base_url and len(articles) < 10:
+        articles.extend(parse_feed(url=base_url))
 
     return articles
+
+
+LANGUAGE_MAP = {
+    'en': Language.ENGLISH,
+    'ru': Language.RUSSIAN,
+    'hi': Language.HINDI,
+    'zh-cn': Language.CHINESE,
+    'kk': Language.KAZAKH
+}
+
+supported_languages = [LANGUAGE_MAP[lang] for lang in SUPPORTED_LANGS]
+detector = LanguageDetectorBuilder.from_languages(*supported_languages).build()
+
+
+def detect_language(text):
+    try:
+        sample_text = text[:500]
+
+        detected_language = detector.detect_language_of(sample_text)
+
+        for code, lang in LANGUAGE_MAP.items():
+            if lang == detected_language:
+                return code
+        return None
+    except Exception as e:
+        logger.error(f"Error detecting language: {e}")
+        return None

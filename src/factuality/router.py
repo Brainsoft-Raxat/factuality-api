@@ -5,6 +5,7 @@ from .schemas import ScoreRequest, TaskID, GetTaskResponse, SubmitTaskResponse, 
 from . import service
 from src.dependencies import get_db
 from src import models
+import src.db.task as db_task
 
 from sqlalchemy.orm import Session
 
@@ -19,11 +20,11 @@ async def submit_task(
         worker: BackgroundTasks,
         db: Session = Depends(get_db)
 ):
-    db_task = service.create_task(db, request.model_dump())
+    task = db_task.create_task(db, request.model_dump())
 
-    worker.add_task(service.process_task, db, db_task.id)
+    worker.add_task(service.process_task, db, task.id)
 
-    return SubmitTaskResponse(message="Task submitted", task_id=str(db_task.id))
+    return SubmitTaskResponse(message="Task submitted", task_id=str(task.id))
 
 
 @router.get("/task/{task_id}", status_code=status.HTTP_200_OK, responses={
@@ -31,17 +32,17 @@ async def submit_task(
     404: {"description": "Task not found", "model": dict},
 })
 def get_task(task_id: TaskID = Depends(), db: Session = Depends(get_db)):
-    db_task = service.get_task(db, str(task_id.task_id))
+    task = db_task.get_task(db, str(task_id.task_id))
 
-    if db_task is None:
+    if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
 
-    if db_task.status == models.TaskStatus.COMPLETED:
-        return GetTaskResponse(status=db_task.status.name, data=db_task.response)
-    elif db_task.status == models.TaskStatus.FAILED:
-        return GetTaskResponse(status=db_task.status.name, error=db_task.error)
+    if task.status == models.TaskStatus.COMPLETED:
+        return GetTaskResponse(status=task.status.name, data=task.response)
+    elif task.status == models.TaskStatus.FAILED:
+        return GetTaskResponse(status=task.status.name, error=task.error)
 
-    return GetTaskResponse(status=db_task.status.name)
+    return GetTaskResponse(status=task.status.name)
 
 
 @router.get("/feed")

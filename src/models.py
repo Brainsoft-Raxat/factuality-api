@@ -60,8 +60,10 @@ class Article(Base):
     site_id = Column(UUID(as_uuid=True), ForeignKey(
         'sites.id', ondelete="CASCADE"), nullable=False)
     url = Column(String, nullable=False)
+    lang = Column(String, nullable=False)
     title = Column(String, server_default="Unknown", nullable=False)
     author = Column(String, server_default="Unknown", nullable=False)
+    library = Column(String, server_default="Unknown")
     content = Column(Text, nullable=False)
     is_scored = Column(Boolean, server_default="False", nullable=False)
     scores = Column(JSONB)
