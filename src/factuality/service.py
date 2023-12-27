@@ -101,12 +101,10 @@ def score(db: Session, url: str):
                     {"label0": 0.0, "label1": 0.0, "label2": 0.0})
         except Exception as e:
             if i == 0:
-                logger.error(f"Error scoring article {
-                             i+1}/{len(input_texts)}: {str(e)}")
+                logger.error(f"Error scoring article {i+1}/{len(input_texts)}: {str(e)}")
                 raise Exception(f"Failed to get results from model: {str(e)}")
             else:
-                logger.error(f"Error scoring article {
-                             i+1}/{len(input_texts)}: {str(e)}")
+                logger.error(f"Error scoring article {i+1}/{len(input_texts)}: {str(e)}")
                 resulting_scores.append(
                     {"label0": 0.0, "label1": 0.0, "label2": 0.0})
 
