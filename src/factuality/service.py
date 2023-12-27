@@ -85,8 +85,7 @@ def score(db: Session, url: str):
 
         try:
             response = model.score_articles(payload)
-            logger.info(f"Successfully scored article {
-                        i+1}/{len(input_texts)}")
+            logger.info(f"Successfully scored article {i+1}/{len(input_texts)}")
             if response:
                 score_dict = {"label0": 0.0, "label1": 0.0, "label2": 0.0}
                 for item in response[0]:
