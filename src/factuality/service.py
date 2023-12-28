@@ -89,11 +89,11 @@ def score(db: Session, url: str):
             if response:
                 score_dict = {"label0": 0.0, "label1": 0.0, "label2": 0.0}
                 for item in response[0]:
-                    if item['label'] == 'contradiction':
+                    if item['label'] == 'low':
                         score_dict['label2'] = item['score']
-                    elif item['label'] == 'neutral':
+                    elif item['label'] == 'mixed':
                         score_dict['label1'] = item['score']
-                    elif item['label'] == 'entailment':
+                    elif item['label'] == 'high':
                         score_dict['label0'] = item['score']
                 resulting_scores.append(score_dict)
             else:
