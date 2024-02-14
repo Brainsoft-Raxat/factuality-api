@@ -2,8 +2,11 @@ from pydantic_settings import BaseSettings
 
 
 class Config(BaseSettings):
-    FACTUALITY_MODEL_URL: str
-    FACTUALITY_MODEL_TOKEN: str
+    BASE_MODEL_URL: str
+    BASE_MODEL_TOKEN: str
+    FACTUALITY_MODEL_PATH: str
+    FREEDOM_MODEL_PATH: str
+    BIAS_MODEL_PATH: str
 
 
 settings = Config()

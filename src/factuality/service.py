@@ -22,7 +22,8 @@ import src.db.site as db_site
 import src.db.article as db_article
 
 MAX_FEED_ARTICLES = 10
-SUPPORTED_LANGS = ['en', 'ru', 'hi', 'zh-cn', 'kk']
+SUPPORTED_LANGS = ['en', 'ru', 'hi', 'zh-cn',
+                   'kk', 'it', 'de', 'ko', 'es', 'fr']
 
 
 def process_task(db: Session, task_id: uuid.UUID):
@@ -78,42 +79,15 @@ def score(db: Session, url: str):
 
     model = Client()
 
-    resulting_scores = []
-
-    for i, input_text in enumerate(input_texts):
-        payload = {"inputs": input_text}
-
-        try:
-            response = model.score_articles(payload)
-            logger.info(f"Successfully scored article {i+1}/{len(input_texts)}")
-            if response:
-                score_dict = {"label0": 0.0, "label1": 0.0, "label2": 0.0}
-                for item in response[0]:
-                    if item['label'] == 'low':
-                        score_dict['label2'] = item['score']
-                    elif item['label'] == 'mixed':
-                        score_dict['label1'] = item['score']
-                    elif item['label'] == 'high':
-                        score_dict['label0'] = item['score']
-                resulting_scores.append(score_dict)
-            else:
-                resulting_scores.append(
-                    {"label0": 0.0, "label1": 0.0, "label2": 0.0})
-        except Exception as e:
-            if i == 0:
-                logger.error(f"Error scoring article {i+1}/{len(input_texts)}: {str(e)}")
-                raise Exception(f"Failed to get results from model: {str(e)}")
-            else:
-                logger.error(f"Error scoring article {i+1}/{len(input_texts)}: {str(e)}")
-                resulting_scores.append(
-                    {"label0": 0.0, "label1": 0.0, "label2": 0.0})
+    resulting_scores = model.score_articles_concurrently(
+        input_texts=input_texts)
 
     logger.info("Article scoring completed.")
 
     articles_data: List[ArticleCreate] = []
     for i, parsed_article in enumerate(parsed_articles):
         scores = resulting_scores[i]
-        if any(score > 0.0 for score in scores.values()):
+        if all(value > 0.0 for nested_scores in scores.values() for value in nested_scores.values()):
             article_data = {
                 'site_id': site.id,
                 'url': parsed_article['url'],
@@ -133,16 +107,37 @@ def score(db: Session, url: str):
 
     articles = db_article.create_articles(db, articles_data)
 
-    sums = {label: sum(score[label] for score in resulting_scores) for label in [
-        'label0', 'label1', 'label2']}
+    sums = {
+        'factuality': {label: 0.0 for label in ['LOW', 'MIXED', 'HIGH']},
+        'freedom': {label: 0.0 for label in ['MOSTLY_FREE', 'EXCELLENT', 'LIMITED_FREEDOM', 'TOTAL_OPPRESSION', 'MODERATE_FREEDOM']},
+        'bias': {label: 0.0 for label in ['LEAST_BIASED', 'FAR_RIGHT', 'RIGHT', 'RIGHT_CENTER', 'LEFT', 'LEFT_CENTER', 'FAR_LEFT']}
+    }
+
+    for scores in resulting_scores:
+        for category in sums:
+            for label in sums[category]:
+                sums[category][label] += scores[category].get(label, 0.0)
 
     if site.scores:
-        for label in sums:
-            sums[label] += site.scores[label]
+        for category in sums:
+            for label in sums[category]:
+                if category in site.scores and label in site.scores[category]:
+                    sums[category][label] += site.scores[category][label]
 
-    total = sum(sums.values())
+    site_score = {
+        category: {label: sum_ / sum(sums[category].values())
+                   for label, sum_ in sums[category].items()}
+        for category in sums
+    }
 
-    site_score = {label: sums[label] / total for label in sums}
+    for category in site_score:
+        total = sum(sums[category].values())
+        if total > 0:
+            site_score[category] = {
+                label: value / total for label, value in sums[category].items()}
+        else:
+            # Or handle as appropriate
+            site_score[category] = {label: 0.0 for label in sums[category]}
 
     site = db_site.update_site(db, site.id, new_scores=site_score)
 
@@ -157,7 +152,6 @@ def clean_text(text):
 
 
 logger = logging.getLogger(__name__)
-SUPPORTED_LANGS = ['en', 'ru', 'hi', 'zh-cn', 'kk']
 
 
 def parse_article(url: str):
@@ -224,7 +218,12 @@ LANGUAGE_MAP = {
     'ru': Language.RUSSIAN,
     'hi': Language.HINDI,
     'zh-cn': Language.CHINESE,
-    'kk': Language.KAZAKH
+    'kk': Language.KAZAKH,
+    "it": Language.ITALIAN,
+    "de": Language.GERMAN,
+    "ko": Language.KOREAN,
+    "es": Language.SPANISH,
+    "fr": Language.FRENCH
 }
 
 supported_languages = [LANGUAGE_MAP[lang] for lang in SUPPORTED_LANGS]
