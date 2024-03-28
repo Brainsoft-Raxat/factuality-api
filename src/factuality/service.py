@@ -3,7 +3,10 @@ import uuid
 import random
 import re
 import json
+import tldextract
+import pandas as pd
 from typing import List
+from urllib.parse import urlparse
 
 
 from courlan import get_base_url, is_external
@@ -24,6 +27,28 @@ import src.db.article as db_article
 MAX_FEED_ARTICLES = 10
 SUPPORTED_LANGS = ['en', 'ru', 'hi', 'zh-cn',
                    'kk', 'it', 'de', 'ko', 'es', 'fr']
+
+
+def get_most_matching_row(df, base_url):
+    hostname = tldextract.extract(base_url)
+    search_pattern = hostname.domain
+    matching_rows = df[df['source'].str.contains(search_pattern, case=False)]
+
+    if matching_rows.empty:
+        return None
+
+    closest_match = matching_rows['source'].str.len().sort_values().index[0]
+    most_matching_row = matching_rows.loc[closest_match]
+
+    return most_matching_row
+
+
+def transform_scores(scores, category):
+    del scores['source']
+    if category == 'manipulation':
+        return {key.upper().replace('LABELS.', ''): value for key, value in scores.items()}
+    else:
+        return {key.upper(): value for key, value in scores.items()}
 
 
 def process_task(db: Session, task_id: uuid.UUID):
@@ -61,6 +86,26 @@ def score(db: Session, url: str):
 
     if site and article and site.scores is not None and article.is_scored:
         logger.info("Article already scored.")
+
+        framing_df = pd.read_parquet('framing.parquet')
+        manipulation_df = pd.read_parquet('manipulation.parquet')
+
+        framing_df['source'] = framing_df.index
+        manipulation_df['source'] = manipulation_df.index
+
+        most_matching_framing = get_most_matching_row(framing_df, base_url)
+        most_matching_manipulation = get_most_matching_row(
+            manipulation_df, base_url)
+
+        if most_matching_framing is not None:
+            framing_scores_transformed = transform_scores(
+                most_matching_framing.to_dict(), 'framing')
+            site.scores['framing'] = framing_scores_transformed
+
+        if most_matching_manipulation is not None:
+            manipulation_scores_transformed = transform_scores(
+                most_matching_manipulation.to_dict(), 'manipulation')
+            site.scores['manipulation'] = manipulation_scores_transformed
         return {"site": site.scores, "article": article.scores}
 
     parsed_article = parse_article(url)
@@ -110,7 +155,8 @@ def score(db: Session, url: str):
     sums = {
         'factuality': {label: 0.0 for label in ['LOW', 'MIXED', 'HIGH']},
         'freedom': {label: 0.0 for label in ['MOSTLY_FREE', 'EXCELLENT', 'LIMITED_FREEDOM', 'TOTAL_OPPRESSION', 'MODERATE_FREEDOM']},
-        'bias': {label: 0.0 for label in ['LEAST_BIASED', 'FAR_RIGHT', 'RIGHT', 'RIGHT_CENTER', 'LEFT', 'LEFT_CENTER', 'FAR_LEFT']}
+        'bias': {label: 0.0 for label in ['LEAST_BIASED', 'FAR_RIGHT', 'RIGHT', 'RIGHT_CENTER', 'LEFT', 'LEFT_CENTER', 'FAR_LEFT']},
+        'genre': {label: 0.0 for label in ['OPINION', 'SATIRE', 'REPORTING']}
     }
 
     for scores in resulting_scores:
@@ -140,6 +186,26 @@ def score(db: Session, url: str):
             site_score[category] = {label: 0.0 for label in sums[category]}
 
     site = db_site.update_site(db, site.id, new_scores=site_score)
+
+    framing_df = pd.read_parquet('framing.parquet')
+    manipulation_df = pd.read_parquet('manipulation.parquet')
+
+    framing_df['source'] = framing_df.index
+    manipulation_df['source'] = manipulation_df.index
+
+    most_matching_framing = get_most_matching_row(framing_df, base_url)
+    most_matching_manipulation = get_most_matching_row(
+        manipulation_df, base_url)
+
+    if most_matching_framing is not None:
+        framing_scores_transformed = transform_scores(
+            most_matching_framing.to_dict(), 'framing')
+        site_score['framing'] = framing_scores_transformed
+
+    if most_matching_manipulation is not None:
+        manipulation_scores_transformed = transform_scores(
+            most_matching_manipulation.to_dict(), 'manipulation')
+        site_score['manipulation'] = manipulation_scores_transformed
 
     return {
         "article": resulting_scores[0],

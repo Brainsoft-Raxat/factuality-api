@@ -1,11 +1,13 @@
 from uuid import UUID
-from typing import Optional, Dict
+from typing import Optional, Dict, Union
 
 from pydantic import BaseModel, validator, Field
 from courlan import validate_url, scrub_url
 
+
 class TaskID(BaseModel):
     task_id: UUID
+
 
 class ScoreRequest(BaseModel):
     url: str
@@ -17,19 +19,22 @@ class ScoreRequest(BaseModel):
             raise ValueError("Invalid URL")
         return scrub_url(v)
 
+
 class ScoreResponse(BaseModel):
-    article: Dict[str, Dict[str, float]]  # Adjusted to nested dict for detailed scores
-    site: Dict[str, Dict[str, float]]     # Adjusted to nested dict for detailed scores
+    article: Dict[str, Dict[str, float]]
+    site: Dict[str, Dict[str, float]]
+
 
 class ArticleCreate(BaseModel):
     site_id: UUID
     url: str
     lang: Optional[str] = None  # Assuming language might be relevant
     title: str
-    author: Optional[str] = None  # Made optional, as not all articles might have a clear author
+    author: Optional[str] = None
     content: str
     is_scored: bool
-    scores: Optional[Dict[str, Dict[str, float]]] = None  # Adjusted for detailed scoring
+
+    scores: Optional[Dict[str, Dict[str, float]]] = None
     num_of_tries: Optional[int] = None
 
     @validator("url", allow_reuse=True)
@@ -45,12 +50,14 @@ class ScoreCategory(BaseModel):
     MIXED: float = 0.0
     HIGH: float = 0.0
 
+
 class FreedomScoreCategory(BaseModel):
     MOSTLY_FREE: float = 0.0
     EXCELLENT: float = 0.0
     LIMITED_FREEDOM: float = 0.0
     TOTAL_OPPRESSION: float = 0.0
     MODERATE_FREEDOM: float = 0.0
+
 
 class BiasScoreCategory(BaseModel):
     LEAST_BIASED: float = 0.0
@@ -61,22 +68,36 @@ class BiasScoreCategory(BaseModel):
     LEFT_CENTER: float = 0.0
     FAR_LEFT: float = 0.0
 
+
+class GenreScoreCategory(BaseModel):
+    OPINION: float = 0.0
+    SATIRE: float = 0.0
+    REPORTING: float = 0.0
+
+
 class ScoreData(BaseModel):
     factuality: ScoreCategory
     freedom: FreedomScoreCategory
     bias: BiasScoreCategory
+    genre: GenreScoreCategory
+    framing: Optional[Dict[str, Union[float, int, str]]] = None
+    manipulation: Optional[Dict[str, Union[float, int, str]]] = None
+
 
 class ArticleScoreData(BaseModel):
     article: ScoreData
     site: ScoreData
 
+
 class ErrorDetail(BaseModel):
     message: str
+
 
 class GetTaskResponse(BaseModel):
     status: str
     data: Optional[ArticleScoreData] = None
     error: Optional[ErrorDetail] = None
+
 
 class SubmitTaskResponse(BaseModel):
     task_id: str

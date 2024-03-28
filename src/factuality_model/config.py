@@ -7,6 +7,7 @@ class Config(BaseSettings):
     FACTUALITY_MODEL_PATH: str
     FREEDOM_MODEL_PATH: str
     BIAS_MODEL_PATH: str
+    GENRE_MODEL_PATH: str
 
 
 settings = Config()
