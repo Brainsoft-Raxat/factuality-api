@@ -84,108 +84,33 @@ def score(db: Session, url: str):
 
     article = db_article.get_article(db, url)
 
-    if site and article and site.scores is not None and article.is_scored:
+    if article and article.is_scored:
         logger.info("Article already scored.")
-
-        framing_df = pd.read_parquet('framing.parquet')
-        manipulation_df = pd.read_parquet('manipulation.parquet')
-
-        framing_df['source'] = framing_df.index
-        manipulation_df['source'] = manipulation_df.index
-
-        most_matching_framing = get_most_matching_row(framing_df, base_url)
-        most_matching_manipulation = get_most_matching_row(
-            manipulation_df, base_url)
-
-        if most_matching_framing is not None:
-            framing_scores_transformed = transform_scores(
-                most_matching_framing.to_dict(), 'framing')
-            site.scores['framing'] = framing_scores_transformed
-
-        if most_matching_manipulation is not None:
-            manipulation_scores_transformed = transform_scores(
-                most_matching_manipulation.to_dict(), 'manipulation')
-            site.scores['manipulation'] = manipulation_scores_transformed
-        return {"site": site.scores, "article": article.scores}
+        return {"article": article.scores}
 
     parsed_article = parse_article(url)
-    parsed_articles = [parsed_article]
 
     if site is None:
         site = db_site.create_site(db, url=base_url)
 
-    if site and site.scores is None:
-        feed_articles = parse_feed(base_url=base_url, url=url)
-
-        parsed_articles.extend(feed_articles)
-
-    input_texts: List[str] = [parsed_article['text']
-                              for parsed_article in parsed_articles]
-
     model = Client()
-
-    resulting_scores = model.score_articles_concurrently(
-        input_texts=input_texts)
+    scores = model.score_articles_concurrently([parsed_article['text']])[0]
 
     logger.info("Article scoring completed.")
 
-    articles_data: List[ArticleCreate] = []
-    for i, parsed_article in enumerate(parsed_articles):
-        scores = resulting_scores[i]
-        if all(value > 0.0 for nested_scores in scores.values() for value in nested_scores.values()):
-            article_data = {
-                'site_id': site.id,
-                'url': parsed_article['url'],
-                'lang': parsed_article['lang'],
-                'title': parsed_article['title'],
-                'author': parsed_article['authors'],
-                'content': parsed_article['text'],
-                'library': parsed_article['library'],
-                'is_scored': True,
-                'scores': scores
-            }
-            articles_data.append(article_data)
-
-    if len(resulting_scores) == 0:
-        raise Exception(
-            "failed to get model responses for articles. len(resulting_scores) = 0")
-
-    articles = db_article.create_articles(db, articles_data)
-
-    sums = {
-        'factuality': {label: 0.0 for label in ['LOW', 'MIXED', 'HIGH']},
-        'freedom': {label: 0.0 for label in ['MOSTLY_FREE', 'EXCELLENT', 'LIMITED_FREEDOM', 'TOTAL_OPPRESSION', 'MODERATE_FREEDOM']},
-        'bias': {label: 0.0 for label in ['LEAST_BIASED', 'FAR_RIGHT', 'RIGHT', 'RIGHT_CENTER', 'LEFT', 'LEFT_CENTER', 'FAR_LEFT']},
-        'genre': {label: 0.0 for label in ['OPINION', 'SATIRE', 'REPORTING']}
+    article_data = {
+        'site_id': site.id,
+        'url': parsed_article['url'],
+        'lang': parsed_article['lang'],
+        'title': parsed_article['title'],
+        'author': parsed_article['authors'],
+        'content': parsed_article['text'],
+        'library': parsed_article['library'],
+        'is_scored': True,
+        'scores': scores
     }
 
-    for scores in resulting_scores:
-        for category in sums:
-            for label in sums[category]:
-                sums[category][label] += scores[category].get(label, 0.0)
-
-    if site.scores:
-        for category in sums:
-            for label in sums[category]:
-                if category in site.scores and label in site.scores[category]:
-                    sums[category][label] += site.scores[category][label]
-
-    site_score = {
-        category: {label: sum_ / sum(sums[category].values())
-                   for label, sum_ in sums[category].items()}
-        for category in sums
-    }
-
-    for category in site_score:
-        total = sum(sums[category].values())
-        if total > 0:
-            site_score[category] = {
-                label: value / total for label, value in sums[category].items()}
-        else:
-            # Or handle as appropriate
-            site_score[category] = {label: 0.0 for label in sums[category]}
-
-    site = db_site.update_site(db, site.id, new_scores=site_score)
+    article = db_article.create_articles(db, [article_data])[0]
 
     framing_df = pd.read_parquet('framing.parquet')
     manipulation_df = pd.read_parquet('manipulation.parquet')
@@ -200,16 +125,15 @@ def score(db: Session, url: str):
     if most_matching_framing is not None:
         framing_scores_transformed = transform_scores(
             most_matching_framing.to_dict(), 'framing')
-        site_score['framing'] = framing_scores_transformed
+        site.scores['framing'] = framing_scores_transformed
 
     if most_matching_manipulation is not None:
         manipulation_scores_transformed = transform_scores(
             most_matching_manipulation.to_dict(), 'manipulation')
-        site_score['manipulation'] = manipulation_scores_transformed
+        site.scores['manipulation'] = manipulation_scores_transformed
 
     return {
-        "article": resulting_scores[0],
-        "site": site_score
+        "article": scores
     }
 
 

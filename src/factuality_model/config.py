@@ -8,6 +8,8 @@ class Config(BaseSettings):
     FREEDOM_MODEL_PATH: str
     BIAS_MODEL_PATH: str
     GENRE_MODEL_PATH: str
+    FRAMING_MODEL_PATH: str
+    MANIPULATION_MODEL_PATH: str
 
 
 settings = Config()
