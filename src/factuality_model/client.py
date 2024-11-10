@@ -73,28 +73,28 @@ class AsyncClient:
                 self.factuality_url,
                 {
                     "inputs": text,
-                    "parameters": {"top_k": "10", "function_to_apply": "softmax"},
+                    "parameters": {"top_k": 10, "function_to_apply": "softmax"},
                 },
             ),
             "bias": (
                 self.bias_url,
                 {
                     "inputs": text,
-                    "parameters": {"top_k": "10", "function_to_apply": "softmax"},
+                    "parameters": {"top_k": 10, "function_to_apply": "softmax"},
                 },
             ),
             "genre": (
                 self.genre_url,
                 {
                     "inputs": text,
-                    "parameters": {"top_k": "10", "function_to_apply": "softmax"},
+                    "parameters": {"top_k": 10, "function_to_apply": "softmax"},
                 },
             ),
             "persuasion": (
                 self.persuasion_url,
                 {
                     "inputs": text,
-                    "parameters": {"top_k": "10", "function_to_apply": "softmax"},
+                    "parameters": {"top_k": 5, "function_to_apply": "softmax"},
                 },
             ),
             "framing": (
