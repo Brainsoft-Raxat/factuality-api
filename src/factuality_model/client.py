@@ -1,213 +1,129 @@
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import httpx
+import asyncio
+import time
 from typing import Any, Dict, List
-from .config import settings
+from src.factuality_model.config import settings
 
 
-class Client:
-    def __init__(self):
-        self.session = requests.Session()
-        retries = Retry(
-            total=10,
-            backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=frozenset(['GET', 'POST'])
-        )
-        self.session.mount('http://', HTTPAdapter(max_retries=retries))
-        self.session.mount('https://', HTTPAdapter(max_retries=retries))
-        self.URL = settings.BASE_MODEL_URL
-        self.TOKEN = "Bearer " + settings.BASE_MODEL_TOKEN
-        self.FACTUALITY = settings.FACTUALITY_MODEL_PATH
-        self.FREEDOM = settings.FREEDOM_MODEL_PATH
-        self.BIAS = settings.BIAS_MODEL_PATH
-        self.GENRE = settings.GENRE_MODEL_PATH
+class AsyncClient:
+    def __init__(self, max_retries: int = 10, backoff_factor: float = 0.5):
+        self.TOKEN = "Bearer " + settings.HF_API_KEY
+        self.factuality_url = settings.FACTUALITY_MODEL_URL
+        self.bias_url = settings.BIAS_MODEL_URL
+        self.genre_url = settings.GENRE_MODEL_URL
+        self.persuasion_url = settings.PERSUASION_MODEL_URL
+        self.framing_url = settings.FRAMING_MODEL_URL
+        self.headers = {"Authorization": self.TOKEN}
+        self.max_retries = max_retries
+        self.backoff_factor = backoff_factor
 
-    def score_factuality(self, payload: dict[str, Any]) -> dict:
-        headers = {"Authorization": self.TOKEN}
-        try:
-            response = self.session.post(
-                self.URL + self.FACTUALITY, headers=headers, json=payload)
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            raise Exception(f"Request failed with error: {e}")
-
-    def score_freedom(self, payload: dict[str, Any]) -> dict:
-        headers = {"Authorization": self.TOKEN}
-        try:
-            response = self.session.post(
-                self.URL + self.FREEDOM, headers=headers, json=payload)
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            raise Exception(f"Request failed with error: {e}")
-
-    def score_bias(self, payload: dict[str, Any]) -> dict:
-        headers = {"Authorization": self.TOKEN}
-        try:
-            response = self.session.post(
-                self.URL + self.BIAS, headers=headers, json=payload)
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            raise Exception(f"Request failed with error: {e}")
-
-    def score_genre(self, payload: dict[str, Any]) -> dict:
-        headers = {"Authorization": self.TOKEN}
-        try:
-            response = self.session.post(
-                self.URL + self.GENRE, headers=headers, json=payload)
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            raise Exception(f"Request failed with error: {e}")
-
-    def score_articles_sequentially(self, input_texts: List[str]) -> List[Dict[str, Any]]:
-        resulting_scores = []
-
-        def score_article(input_text):
-            payload = {"inputs": input_text}
-            scores = {"factuality": {}, "freedom": {}, "bias": {}, "genre": {}}
-
-            with ThreadPoolExecutor(max_workers=3) as executor:
-                future_to_model = {
-                    executor.submit(self.score_factuality, payload): "factuality",
-                    executor.submit(self.score_freedom, payload): "freedom",
-                    executor.submit(self.score_bias, payload): "bias",
-                    executor.submit(self.score_genre, payload): "genre"
-                }
-                for future in as_completed(future_to_model):
-                    model_name = future_to_model[future]
-                    try:
-                        response = future.result()
-                        if model_name == "factuality":
-                            for item in response[0]:
-                                if item['label'] == 'neutral':
-                                    scores[model_name]['MIXED'] = item['score']
-                                elif item['label'] == 'entailment':
-                                    scores[model_name]['HIGH'] = item['score']
-                                elif item['label'] == 'contradiction':
-                                    scores[model_name]['LOW'] = item['score']
-                        elif model_name == "freedom":
-                            for item in response[0]:
-                                label = item['label'].replace('LABEL_', '')
-                                label_map = {
-                                    "0": "MOSTLY_FREE",
-                                    "1": "EXCELLENT",
-                                    "2": "LIMITED_FREEDOM",
-                                    "3": "TOTAL_OPPRESSION",
-                                    "4": "MODERATE_FREEDOM"
-                                }
-                                scores[model_name][label_map[label]
-                                                   ] = item['score']
-                        elif model_name == "bias":
-                            for item in response[0]:
-                                label = item['label'].replace('LABEL_', '')
-                                label_map = {
-                                    "0": "LEAST_BIASED",
-                                    "1": "FAR_RIGHT",
-                                    "2": "RIGHT",
-                                    "3": "RIGHT_CENTER",
-                                    "4": "LEFT",
-                                    "5": "LEFT_CENTER",
-                                    "6": "FAR_LEFT"
-                                }
-                                scores[model_name][label_map[label]
-                                                   ] = item['score']
-                        elif model_name == "genre":
-                            for item in response[0]:
-                                if item['label'] == 'opinion':
-                                    scores[model_name]['OPINION'] = item['score']
-                                elif item['label'] == 'satire':
-                                    scores[model_name]['SATIRE'] = item['score']
-                                elif item['label'] == 'reporting':
-                                    scores[model_name]['REPORTING'] = item['score']
-                    except Exception as exc:
-                        print(f"{model_name} model generated an exception: {exc}")
-            return scores
-
-        # Process each article sequentially
-        for input_text in input_texts:
-            article_scores = score_article(input_text)
-            resulting_scores.append(article_scores)
-
-        return resulting_scores
-
-    # implementation by creating max of
-    def score_articles_concurrently(self, input_texts: List[str]) -> List[Dict[str, Any]]:
-        resulting_scores = []
-
-        def score_article(input_text):
-            payload = {"inputs": input_text}
-            scores = {"factuality": {}, "freedom": {}, "bias": {}, "genre": {}}
-
-            with ThreadPoolExecutor(max_workers=3) as executor:
-                future_to_model = {
-                    executor.submit(self.score_factuality, payload): "factuality",
-                    executor.submit(self.score_freedom, payload): "freedom",
-                    executor.submit(self.score_bias, payload): "bias",
-                    executor.submit(self.score_genre, payload): "genre"
-                }
-                for future in as_completed(future_to_model):
-                    model_name = future_to_model[future]
-                    try:
-                        response = future.result()
-                        if model_name == "factuality":
-                            for item in response[0]:
-                                if item['label'] == 'neutral':
-                                    scores[model_name]['MIXED'] = item['score']
-                                elif item['label'] == 'entailment':
-                                    scores[model_name]['HIGH'] = item['score']
-                                elif item['label'] == 'contradiction':
-                                    scores[model_name]['LOW'] = item['score']
-                        elif model_name == "freedom":
-                            for item in response[0]:
-                                label = item['label'].replace('LABEL_', '')
-                                label_map = {
-                                    "0": "MOSTLY_FREE",
-                                    "1": "EXCELLENT",
-                                    "2": "LIMITED_FREEDOM",
-                                    "3": "TOTAL_OPPRESSION",
-                                    "4": "MODERATE_FREEDOM"
-                                }
-                                scores[model_name][label_map[label]
-                                                   ] = item['score']
-                        elif model_name == "bias":
-                            for item in response[0]:
-                                label = item['label'].replace('LABEL_', '')
-                                label_map = {
-                                    "0": "LEAST_BIASED",
-                                    "1": "FAR_RIGHT",
-                                    "2": "RIGHT",
-                                    "3": "RIGHT_CENTER",
-                                    "4": "LEFT",
-                                    "5": "LEFT_CENTER",
-                                    "6": "FAR_LEFT"
-                                }
-                                scores[model_name][label_map[label]
-                                                   ] = item['score']
-                        elif model_name == "genre":
-                            for item in response[0]:
-                                if item['label'] == 'opinion':
-                                    scores[model_name]['OPINION'] = item['score']
-                                elif item['label'] == 'satire':
-                                    scores[model_name]['SATIRE'] = item['score']
-                                elif item['label'] == 'reporting':
-                                    scores[model_name]['REPORTING'] = item['score']
-                    except Exception as exc:
-                        print(f"{model_name} model generated an exception: {exc}")
-            return scores
-
-        with ThreadPoolExecutor(max_workers=len(input_texts)) as executor:
-            future_to_article = {executor.submit(
-                score_article, text): text for text in input_texts}
-            for future in as_completed(future_to_article):
+    async def _make_request(
+        self, url: str, data: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        async with httpx.AsyncClient(timeout=60) as client:
+            for attempt in range(1, self.max_retries + 1):
                 try:
-                    article_scores = future.result()
-                    resulting_scores.append(article_scores)
-                except Exception as exc:
-                    print(f"Article processing generated an exception: {exc}")
+                    response = await client.post(url, headers=self.headers, json=data)
+                    response.raise_for_status()
+                    response_data = response.json()
 
-        return resulting_scores
+                    # Ensure consistent output format
+                    if isinstance(response_data, list):
+                        return [
+                            {
+                                "label": item.get("label", "unknown"),
+                                "score": item.get("score", 0.0),
+                            }
+                            for item in response_data
+                        ]
+                    elif "label" in response_data and "score" in response_data:
+                        return [
+                            {
+                                "label": response_data["label"],
+                                "score": response_data["score"],
+                            }
+                        ]
+                    else:
+                        return [
+                            {
+                                "label": "unknown",
+                                "score": 0.0,
+                                "error": "Unexpected response format",
+                            }
+                        ]
+
+                except (httpx.RequestError, httpx.HTTPStatusError) as e:
+                    if attempt == self.max_retries:
+                        return [
+                            {
+                                "error": f"Request failed after {self.max_retries} retries: {str(e)}",
+                                "url": url,
+                            }
+                        ]
+                    else:
+                        wait_time = self.backoff_factor * (2 ** (attempt - 1))
+                        print(
+                            f"Retrying {url} in {wait_time:.2f} seconds (attempt {attempt}/{self.max_retries})..."
+                        )
+                        await asyncio.sleep(wait_time)
+
+    async def get_all_scores(self, text: str) -> Dict[str, Any]:
+        requests_data = {
+            "factuality": (
+                self.factuality_url,
+                {
+                    "inputs": text,
+                    "parameters": {"top_k": "10", "function_to_apply": "softmax"},
+                },
+            ),
+            "bias": (
+                self.bias_url,
+                {
+                    "inputs": text,
+                    "parameters": {"top_k": "10", "function_to_apply": "softmax"},
+                },
+            ),
+            "genre": (
+                self.genre_url,
+                {
+                    "inputs": text,
+                    "parameters": {"top_k": "10", "function_to_apply": "softmax"},
+                },
+            ),
+            "persuasion": (
+                self.persuasion_url,
+                {
+                    "inputs": text,
+                    "parameters": {"top_k": "10", "function_to_apply": "softmax"},
+                },
+            ),
+            "framing": (
+                self.framing_url,
+                {
+                    "inputs": text,
+                    "parameters": {"top_k": 5, "function_to_apply": "softmax"},
+                },
+            ),
+        }
+
+        tasks = [self._make_request(url, data) for url, data in requests_data.values()]
+        start_time = time.time()
+
+        results = await asyncio.gather(*tasks)
+        results_dict = {key: res for key, res in zip(requests_data.keys(), results)}
+
+        # Check if any category contains valid scores; otherwise, provide defaults
+        for key, value in results_dict.items():
+            # Ensure each entry is a list of dictionaries with "label" and "score"
+            if not any("label" in entry and "score" in entry for entry in value):
+                results_dict[key] = [{"label": "unknown", "score": 0.0}]
+
+        results_dict["execution_time"] = time.time() - start_time
+        return results_dict
+
+
+if __name__ == "__main__":
+    client = AsyncClient()
+    text = "As she sweeps up broken glass outside her shop, ..."
+    results = asyncio.run(client.get_all_scores(text))
+    print(results)

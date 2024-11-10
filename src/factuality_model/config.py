@@ -1,15 +1,25 @@
+# config.py
 from pydantic_settings import BaseSettings
+from functools import lru_cache
 
 
 class Config(BaseSettings):
-    BASE_MODEL_URL: str
-    BASE_MODEL_TOKEN: str
-    FACTUALITY_MODEL_PATH: str
-    FREEDOM_MODEL_PATH: str
-    BIAS_MODEL_PATH: str
-    GENRE_MODEL_PATH: str
-    FRAMING_MODEL_PATH: str
-    MANIPULATION_MODEL_PATH: str
+    HF_API_KEY: str
+    FACTUALITY_MODEL_URL: str
+    BIAS_MODEL_URL: str
+    GENRE_MODEL_URL: str
+    PERSUASION_MODEL_URL: str
+    FRAMING_MODEL_URL: str
+    
+    class Config:
+        env_file = ".env"
+        case_sensitive = True
+        extra = "allow"  # This allows extra fields in the environment
 
 
-settings = Config()
+@lru_cache()
+def get_settings():
+    return Config()
+
+
+settings = get_settings()
