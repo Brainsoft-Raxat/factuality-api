@@ -67,7 +67,7 @@ class AsyncClient:
                         )
                         await asyncio.sleep(wait_time)
 
-    async def get_all_scores(self, text: str) -> Dict[str, Any]:
+    async def get_all_scores(self, text: str, metrics: List[str] = None) -> Dict[str, Any]:
         requests_data = {
             "factuality": (
                 self.factuality_url,
@@ -106,15 +106,16 @@ class AsyncClient:
             ),
         }
 
+        if metrics:
+            requests_data = {key: value for key, value in requests_data.items() if key in metrics}
+
         tasks = [self._make_request(url, data) for url, data in requests_data.values()]
         start_time = time.time()
 
         results = await asyncio.gather(*tasks)
         results_dict = {key: res for key, res in zip(requests_data.keys(), results)}
 
-        # Check if any category contains valid scores; otherwise, provide defaults
         for key, value in results_dict.items():
-            # Ensure each entry is a list of dictionaries with "label" and "score"
             if not any("label" in entry and "score" in entry for entry in value):
                 results_dict[key] = [{"label": "unknown", "score": 0.0}]
 
@@ -125,5 +126,5 @@ class AsyncClient:
 if __name__ == "__main__":
     client = AsyncClient()
     text = "As she sweeps up broken glass outside her shop, ..."
-    results = asyncio.run(client.get_all_scores(text))
+    results = asyncio.run(client.get_all_scores(text, ['factuality', 'bias', 'genre']))
     print(results)

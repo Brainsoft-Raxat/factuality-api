@@ -29,6 +29,31 @@ MAX_FEED_ARTICLES = 10
 SUPPORTED_LANGS = ["en", "ru", "hi", "zh-cn", "kk", "it", "de", "ko", "es", "fr"]
 
 
+def softmax(scores):
+    """Apply softmax to convert logits to probabilities"""
+    exp_scores = np.exp(scores - np.max(scores))  # Subtract max for numerical stability
+    return exp_scores / exp_scores.sum()
+
+
+def get_top_k_scores(scores_list, k=5):
+    """Get top k scores after normalizing and sorting"""
+    # Convert to format needed for softmax
+    labels = [item["label"] for item in scores_list]
+    scores = np.array([item["score"] for item in scores_list])
+
+    # Apply softmax
+    probabilities = softmax(scores)
+
+    # Create list of label-score pairs and sort by score
+    scored_labels = list(zip(labels, probabilities))
+    sorted_scores = sorted(scored_labels, key=lambda x: x[1], reverse=True)
+
+    # Return top k in standard format
+    return [
+        {"label": label, "score": float(score)} for label, score in sorted_scores[:k]
+    ]
+
+
 def get_most_matching_row(df, base_url):
     hostname = tldextract.extract(base_url)
     search_pattern = hostname.domain
@@ -81,25 +106,29 @@ def load_framing_scores(base_url: str) -> List[Dict[str, float]]:
     framing_df["source"] = framing_df.index
     most_matching_framing = get_most_matching_row(framing_df, base_url)
     if isinstance(most_matching_framing, pd.Series):
-        return [
-            {"label": label, "score": most_matching_framing[label]}
+        scores = [
+            {"label": normalize_label(label), "score": most_matching_framing[label]}
             for label in most_matching_framing.index
             if label != "source"
         ]
+        return get_top_k_scores(scores, k=5)
     return []
 
 
-# Helper function to load manipulation scores similarly
 def load_manipulation_scores(base_url: str) -> List[Dict[str, float]]:
     manipulation_df = pd.read_parquet("manipulation.parquet")
     manipulation_df["source"] = manipulation_df.index
     most_matching_manipulation = get_most_matching_row(manipulation_df, base_url)
     if isinstance(most_matching_manipulation, pd.Series):
-        return [
-            {"label": label, "score": most_matching_manipulation[label]}
+        scores = [
+            {
+                "label": normalize_label(label),
+                "score": most_matching_manipulation[label],
+            }
             for label in most_matching_manipulation.index
             if label != "source"
         ]
+        return get_top_k_scores(scores, k=5)
     return []
 
 
@@ -130,37 +159,25 @@ def load_corpus_scores(base_url: str) -> Dict[str, List[Dict[str, float]]]:
 
     most_matching_row = matching_rows.loc[closest_match_index]
 
-    fact_score = [{"label": most_matching_row["fact"], "score": 1.0}]
-    bias_score = [{"label": most_matching_row["bias"], "score": 1.0}]
+    fact_score = [{"label": normalize_label(most_matching_row["fact"]), "score": 1.0}]
+    bias_score = [{"label": normalize_label(most_matching_row["bias"]), "score": 1.0}]
 
     return {"factuality": fact_score, "bias": bias_score}
 
 
-def ensure_json_serializable(data):
-    """Recursively convert any int64 or float64 to standard int or float."""
-    if isinstance(data, list):
-        return [ensure_json_serializable(item) for item in data]
-    elif isinstance(data, dict):
-        return {key: ensure_json_serializable(value) for key, value in data.items()}
-    else:
-        return data
-
-
-def softmax(logits: List[float]) -> List[float]:
-    """Convert logits to probabilities using the softmax function."""
-    exp_values = np.exp(logits - np.max(logits))  # Subtract max for numerical stability
-    return (exp_values / exp_values.sum()).tolist()
-
-
-def process_scores(scores: Dict[str, List[Dict[str, float]]]) -> Dict[str, List[Dict[str, float]]]:
+def process_scores(
+    scores: Dict[str, List[Dict[str, float]]],
+) -> Dict[str, List[Dict[str, float]]]:
     """Process scores to select top 5 and convert logits to probabilities for persuasion."""
-    
+
     processed_scores = {}
 
     for category, score_list in scores.items():
         # Ensure score_list is a list; if not, skip this category
         if not isinstance(score_list, list):
-            logger.error(f"Expected list for category '{category}', but got {type(score_list)}.")
+            logger.error(
+                f"Expected list for category '{category}', but got {type(score_list)}."
+            )
             processed_scores[category] = []
             continue
 
@@ -172,64 +189,237 @@ def process_scores(scores: Dict[str, List[Dict[str, float]]]) -> Dict[str, List[
                 {"label": score_list[i]["label"], "score": probabilities[i]}
                 for i in range(len(score_list))
             ]
-            processed_scores[category] = sorted(score_list, key=lambda x: x["score"], reverse=True)[:5]
-        
+            processed_scores[category] = sorted(
+                score_list, key=lambda x: x["score"], reverse=True
+            )[:5]
+
         # For other categories, just get the top 5 scores by value
         else:
-            processed_scores[category] = sorted(score_list, key=lambda x: x["score"], reverse=True)[:5]
+            processed_scores[category] = sorted(
+                score_list, key=lambda x: x["score"], reverse=True
+            )[:5]
 
     return processed_scores
 
 
+def ensure_json_serializable(obj):
+    """Convert numpy types to standard Python types"""
+    if isinstance(obj, dict):
+        return {key: ensure_json_serializable(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [ensure_json_serializable(item) for item in obj]
+    elif isinstance(obj, (np.int64, np.int32, np.int16, np.int8)):
+        return int(obj)
+    elif isinstance(obj, (np.float64, np.float32, np.float16)):
+        return float(obj)
+    elif isinstance(obj, np.bool_):
+        return bool(obj)
+    return obj
+
+
+def normalize_label(label: str) -> str:
+    """Normalize label to match article format: lowercase with underscores"""
+    label = label.replace("labels.", "")
+    return label.lower().replace(" ", "_").replace("-", "_")
+
+
+def merge_duplicate_labels(scores_list):
+    """Merge scores for duplicate labels after normalization"""
+    label_scores = {}
+
+    # Group scores by normalized label
+    for item in scores_list:
+        label = normalize_label(item["label"])
+        if label not in label_scores:
+            label_scores[label] = []
+        label_scores[label].append(float(item["score"]))
+
+    # Average scores for each unique label
+    return [
+        {"label": label, "score": float(sum(scores) / len(scores))}
+        for label, scores in label_scores.items()
+    ]
+
 
 def score(db: Session, url: str):
-    logger.info(f"Scoring article at URL: {url}")
+    logger.info(f"=== Starting scoring process for URL: {url} ===")
     base_url = get_base_url(url)
+    logger.info(f"Base URL extracted: {base_url}")
+
+    # Initialize default site scores structure
+    default_site_scores = {
+        "factuality": [],
+        "bias": [],
+        "framing": [],
+        "persuasion": [],
+        "genre": [],
+    }
 
     # Check if site and article already exist
     site = db_site.get_site(db, url=base_url)
     if site:
-        logger.info(f"Found existing site with ID: {site.id}")
+        logger.info(f"Found existing site in database with ID: {site.id}")
+        # Ensure site.scores has all required fields
+        if site.scores is None:
+            site.scores = default_site_scores
+        else:
+            # Add any missing categories to existing scores
+            for category in default_site_scores:
+                if category not in site.scores:
+                    site.scores[category] = []
 
     article = db_article.get_article(db, url)
     if article and article.is_scored:
-        logger.info("Article already scored.")
-        return {"article": article.scores}
+        logger.info("Article already exists and is scored - returning cached scores")
+        return {"article": article.scores or {}, "site": site.scores or default_site_scores}
 
     # Parse article content
+    logger.info("Starting article parsing...")
     parsed_article = parse_article(url)
-    if site is None:
-        site = db_site.create_site(db, url=base_url)
+    logger.info(f"Article parsed successfully using {parsed_article['library']} library")
+    parsed_articles = [parsed_article]
 
-    # Initialize AsyncClient and fetch scores
+    # Create site if doesn't exist
+    if site is None:
+        logger.info("Creating new site record in database")
+        site = db_site.create_site(db, url=base_url)
+        site.scores = default_site_scores.copy()
+        logger.info(f"Created new site with ID: {site.id}")
+
+    # Load site scores from local data
+    logger.info("Loading pre-computed scores from local data sources...")
+    site_scores = {
+        "factuality": load_corpus_scores(base_url).get("factuality", []),
+        "bias": load_corpus_scores(base_url).get("bias", []),
+        "framing": load_framing_scores(base_url),
+        "persuasion": load_manipulation_scores(base_url),
+        "genre": [],
+    }
+
+    # Log which scores were found
+    for category, scores in site_scores.items():
+        if scores:
+            logger.info(f"Found pre-computed {category} scores: {len(scores)} labels")
+        else:
+            logger.info(f"No pre-computed scores found for {category}")
+
+    # Normalize labels and merge duplicates in site scores
+    logger.info("Normalizing and merging duplicate labels in site scores...")
+    for category in site_scores:
+        if site_scores[category]:
+            site_scores[category] = merge_duplicate_labels(site_scores[category])
+
+    # Check which categories need feed analysis
+    missing_categories = [
+        category
+        for category, scores in site_scores.items()
+        if not scores or scores is None
+    ]
+
+    # If any categories are missing, do feed analysis
+    if missing_categories:
+        logger.info(
+            f"Need to calculate scores for missing categories: {missing_categories}"
+        )
+        logger.info("Starting feed parsing...")
+        feed_articles = parse_feed(url=base_url)
+        logger.info(f"Found {len(feed_articles)} articles in feed")
+        parsed_articles.extend(feed_articles[:5])
+        logger.info(f"Using {len(parsed_articles)} articles for analysis")
+
+        # Score all articles
+        logger.info("Starting batch scoring of articles...")
+        model = AsyncClient()
+        all_article_scores = []
+
+        for i, parsed_article in enumerate(parsed_articles, 1):
+            try:
+                logger.info(f"Scoring article {i}/{len(parsed_articles)}")
+                scores = asyncio.run(model.get_all_scores(parsed_article["text"]))
+                if scores and isinstance(scores, dict):
+                    scores.pop("execution_time", None)
+                    scores = ensure_json_serializable(scores)
+                    for category in scores:
+                        scores[category] = merge_duplicate_labels(scores[category])
+                    all_article_scores.append(scores)
+                    logger.info(f"Successfully scored article {i}")
+            except Exception as e:
+                logger.error(f"Error scoring article {i}: {str(e)}")
+
+        # Calculate aggregated scores only for missing categories
+        if all_article_scores:
+            logger.info("Calculating aggregated scores for missing categories...")
+            aggregated_scores = {}
+
+            # Initialize aggregation structure for missing categories
+            first_scores = all_article_scores[0]
+            for category in missing_categories:
+                if category in first_scores:
+                    logger.info(f"Aggregating scores for {category}")
+                    aggregated_scores[category] = {}
+                    for score_item in first_scores[category]:
+                        label = normalize_label(score_item["label"])
+                        aggregated_scores[category][label] = []
+
+            # Aggregate scores across all articles
+            for article_scores in all_article_scores:
+                for category in missing_categories:
+                    if category in article_scores:
+                        for score_item in article_scores[category]:
+                            label = normalize_label(score_item["label"])
+                            score = float(score_item["score"])
+                            if (
+                                category in aggregated_scores
+                                and label in aggregated_scores[category]
+                            ):
+                                aggregated_scores[category][label].append(score)
+
+            # Convert aggregated scores to final format
+            for category in aggregated_scores:
+                logger.info(f"Finalizing aggregated scores for {category}")
+                site_scores[category] = []
+                for label, scores in aggregated_scores[category].items():
+                    if scores:
+                        avg_score = float(sum(scores) / len(scores))
+                        site_scores[category].append(
+                            {"label": label, "score": avg_score}
+                        )
+
+    # Process final scores
+    logger.info("Processing final scores...")
+    site_scores = ensure_json_serializable(site_scores)
+
+    # Apply top-k and softmax
+    if site_scores.get("framing"):
+        logger.info("Applying top-k and softmax to framing scores")
+        site_scores["framing"] = get_top_k_scores(
+            merge_duplicate_labels(site_scores["framing"]), k=5
+        )
+    if site_scores.get("persuasion"):
+        logger.info("Applying top-k and softmax to persuasion scores")
+        site_scores["persuasion"] = get_top_k_scores(
+            merge_duplicate_labels(site_scores["persuasion"]), k=5
+        )
+
+    # Score individual article
+    logger.info("Scoring individual article...")
     model = AsyncClient()
+    article_scores = {}
     try:
         scores = asyncio.run(model.get_all_scores(parsed_article["text"]))
-        if not scores:
-            raise ValueError("No scores returned from API.")
+        if scores and isinstance(scores, dict):
+            scores.pop("execution_time", None)
+            article_scores = ensure_json_serializable(scores)
+            logger.info("Successfully scored individual article")
     except Exception as e:
-        logger.error(f"Error fetching scores: {e}")
-        scores = {}  # Fallback to loading from local files
+        logger.error(f"Error scoring individual article: {str(e)}")
 
-    # Load scores from local files if API scores are missing
-    if not scores.get("factuality"):
-        scores["factuality"] = load_corpus_scores(base_url).get("factuality", [])
-    if not scores.get("bias"):
-        scores["bias"] = load_corpus_scores(base_url).get("bias", [])
-    if not scores.get("framing"):
-        scores["framing"] = load_framing_scores(base_url)
-    if not scores.get("persuasion"):
-        scores["persuasion"] = load_manipulation_scores(base_url)
-    if not scores.get("genre"):
-        scores["genre"] = []  # Ensure missing category is empty
+    logger.info("Updating site scores in database...")
+    site = db_site.update_site(db, site.id, new_scores=site_scores)
+    logger.info("Site scores updated successfully")
 
-    logger.info("Article scoring completed.")
-
-    # Convert scores to JSON-serializable format and process top scores
-    scores = ensure_json_serializable(scores)
-    scores = process_scores(scores)
-
-    # Prepare article data with scores
+    # Create article record
+    logger.info("Creating article record in database...")
     article_data = {
         "site_id": site.id,
         "url": parsed_article["url"],
@@ -239,12 +429,23 @@ def score(db: Session, url: str):
         "content": parsed_article["text"],
         "library": parsed_article["library"],
         "is_scored": True,
-        "scores": scores,  # Now ensured to be JSON-serializable and processed
+        "scores": article_scores,
     }
 
-    # Save the article in the database
     article = db_article.create_articles(db, [article_data])[0]
-    return {"article": scores}
+    logger.info(f"Created article record with ID: {article.id}")
+
+    # Use the calculated site_scores instead of site.scores
+    final_site_scores = site_scores or default_site_scores
+    for category in default_site_scores:
+        if category not in final_site_scores:
+            final_site_scores[category] = []
+
+    # Ensure article scores is a dictionary
+    final_article_scores = article_scores if article_scores else {}
+
+    logger.info("=== Scoring process completed ===")
+    return {"article": final_article_scores, "site": final_site_scores}
 
 
 def clean_text(text):

@@ -61,7 +61,7 @@ class ScoreData(BaseModel):
 
 class ArticleScoreData(BaseModel):
     article: ScoreData
-    # site: ScoreData
+    site: ScoreData
 
 
 class ErrorDetail(BaseModel):
