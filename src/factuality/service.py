@@ -74,59 +74,6 @@ def process_task(db: Session, task_id: uuid.UUID):
         db_task.update_task(db, task)
 
 
-def load_framing_scores(base_url: str) -> List[Dict[str, float]]:
-    """Load framing scores for a given URL by matching the exact source."""
-    # Load framing data
-    framing_df = pd.read_parquet("framing.parquet")
-
-    # Normalize the base URL to find the corresponding source
-    source = normalize_url_for_framing_and_manipulation(base_url)
-
-    # Find the exact match for the source in the DataFrame
-    matching_rows = framing_df[framing_df["source"] == source]
-
-    # If an exact match is found, extract the scores
-    if not matching_rows.empty:
-        most_matching_framing = matching_rows.iloc[0]
-        scores = [
-            {"label": normalize_label(label), "score": most_matching_framing[label]}
-            for label in most_matching_framing.index
-            if label != "source"
-        ]
-        return get_top_k_scores(scores, k=5)
-
-    # Return empty list if no match is found
-    return []
-
-
-def load_manipulation_scores(base_url: str) -> List[Dict[str, float]]:
-    """Load manipulation scores for a given URL by matching the exact source."""
-    # Load manipulation data
-    manipulation_df = pd.read_parquet("manipulation.parquet")
-
-    # Normalize the base URL to find the corresponding source
-    source = normalize_url_for_framing_and_manipulation(base_url)
-
-    # Find the exact match for the source in the DataFrame
-    matching_rows = manipulation_df[manipulation_df["source"] == source]
-
-    # If an exact match is found, extract the scores
-    if not matching_rows.empty:
-        most_matching_manipulation = matching_rows.iloc[0]
-        scores = [
-            {
-                "label": normalize_label(label),
-                "score": most_matching_manipulation[label],
-            }
-            for label in most_matching_manipulation.index
-            if label != "source"
-        ]
-        return get_top_k_scores(scores, k=5)
-
-    # Return empty list if no match is found
-    return []
-
-
 def load_corpus_scores(source_url: str) -> Dict[str, List[Dict[str, float]]]:
     """Load corpus scores by matching exact source_url or source_url_normalized."""
 
@@ -148,6 +95,50 @@ def load_corpus_scores(source_url: str) -> Dict[str, List[Dict[str, float]]]:
     bias_score = [{"label": normalize_label(most_matching_row["bias"]), "score": 1.0}]
 
     return {"factuality": fact_score, "bias": bias_score}
+
+
+def load_framing_scores(base_url: str) -> List[Dict[str, float]]:
+    """Load framing scores for a given URL by matching the exact source."""
+    # Load framing data
+    framing_df = pd.read_parquet("framing.parquet")
+    # Normalize the base URL to find the corresponding source
+    source = normalize_url_for_framing_and_manipulation(base_url)
+
+    # Find the exact match for the source in the DataFrame's index
+    if source in framing_df.index:
+        most_matching_framing = framing_df.loc[source]
+        scores = [
+            {"label": normalize_label(label), "score": most_matching_framing[label]}
+            for label in most_matching_framing.index
+        ]
+        return get_top_k_scores(scores, k=5)
+
+    # Return empty list if no match is found
+    return []
+
+
+def load_manipulation_scores(base_url: str) -> List[Dict[str, float]]:
+    """Load manipulation scores for a given URL by matching the exact source."""
+    # Load manipulation data
+    manipulation_df = pd.read_parquet("manipulation.parquet")
+
+    # Normalize the base URL to find the corresponding source
+    source = normalize_url_for_framing_and_manipulation(base_url)
+
+    # Find the exact match for the source in the DataFrame's index
+    if source in manipulation_df.index:
+        most_matching_manipulation = manipulation_df.loc[source]
+        scores = [
+            {
+                "label": normalize_label(label),
+                "score": most_matching_manipulation[label],
+            }
+            for label in most_matching_manipulation.index
+        ]
+        return get_top_k_scores(scores, k=5)
+
+    # Return empty list if no match is found
+    return []
 
 
 def process_scores(
