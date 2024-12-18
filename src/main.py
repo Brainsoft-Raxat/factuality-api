@@ -1,13 +1,21 @@
+from contextlib import asynccontextmanager
+from typing import AsyncGenerator
+
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 
-from src.factuality.router import router as factuality_router
-from .database import engine
-from . import models
+from src.config import app_configs
+from src.tasks.router import router as task_router
 
-models.Base.metadata.create_all(bind=engine)
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(_application: FastAPI) -> AsyncGenerator:
+    # Startup
+    yield
+    # Shutdown
+
+
+app = FastAPI(**app_configs, lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -17,5 +25,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(factuality_router, prefix="/factuality",
-                   tags=["Factuality"])
+
+@app.get("/healthcheck")
+async def healthcheck() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+app.include_router(task_router, prefix="/factuality", tags=["Factuality"])

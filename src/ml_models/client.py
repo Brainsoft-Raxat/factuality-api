@@ -1,8 +1,10 @@
-import httpx
 import asyncio
 import time
 from typing import Any, Dict, List
-from src.factuality_model.config import settings
+
+import httpx
+
+from src.ml_models.config import settings
 
 
 class AsyncClient:
@@ -67,47 +69,51 @@ class AsyncClient:
                         )
                         await asyncio.sleep(wait_time)
 
-    async def get_all_scores(self, text: str, metrics: List[str] = None) -> Dict[str, Any]:
+    async def get_all_scores(
+        self, text: str, metrics: List[str] = None
+    ) -> Dict[str, Any]:
         requests_data = {
             "factuality": (
                 self.factuality_url,
                 {
                     "inputs": text,
-                    "parameters": {"top_k": 10, "function_to_apply": "softmax"},
+                    "parameters": {"top_k": 25, "function_to_apply": "softmax"},
                 },
             ),
             "bias": (
                 self.bias_url,
                 {
                     "inputs": text,
-                    "parameters": {"top_k": 10, "function_to_apply": "softmax"},
+                    "parameters": {"top_k": 25, "function_to_apply": "softmax"},
                 },
             ),
             "genre": (
                 self.genre_url,
                 {
                     "inputs": text,
-                    "parameters": {"top_k": 10, "function_to_apply": "softmax"},
+                    "parameters": {"top_k": 25, "function_to_apply": "softmax"},
                 },
             ),
             "persuasion": (
                 self.persuasion_url,
                 {
                     "inputs": text,
-                    "parameters": {"top_k": 5, "function_to_apply": "softmax"},
+                    "parameters": {"top_k": 25, "function_to_apply": "softmax"},
                 },
             ),
             "framing": (
                 self.framing_url,
                 {
                     "inputs": text,
-                    "parameters": {"top_k": 5, "function_to_apply": "softmax"},
+                    "parameters": {"top_k": 25, "function_to_apply": "softmax"},
                 },
             ),
         }
 
         if metrics:
-            requests_data = {key: value for key, value in requests_data.items() if key in metrics}
+            requests_data = {
+                key: value for key, value in requests_data.items() if key in metrics
+            }
 
         tasks = [self._make_request(url, data) for url, data in requests_data.values()]
         start_time = time.time()
@@ -126,5 +132,5 @@ class AsyncClient:
 if __name__ == "__main__":
     client = AsyncClient()
     text = "As she sweeps up broken glass outside her shop, ..."
-    results = asyncio.run(client.get_all_scores(text, ['factuality', 'bias', 'genre']))
+    results = asyncio.run(client.get_all_scores(text, ["factuality", "bias", "genre"]))
     print(results)

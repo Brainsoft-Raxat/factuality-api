@@ -10,7 +10,7 @@ class Config(BaseSettings):
     GENRE_MODEL_URL: str
     PERSUASION_MODEL_URL: str
     FRAMING_MODEL_URL: str
-    
+
     class Config:
         env_file = ".env"
         case_sensitive = True

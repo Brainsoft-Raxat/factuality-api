@@ -1,5 +1,3 @@
-import logging 
-
-logging.basicConfig(level=logging.INFO)  
+import logging
 
 logger = logging.getLogger(__name__)
