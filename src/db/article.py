@@ -4,16 +4,17 @@ from sqlalchemy.orm import Session
 from typing import List, Dict
 
 
-def create_articles(db: Session, articles_data: List[Dict]):
+def create_articles(db: Session, articles_data: List[Dict]) -> List[models.Article]:
     db_articles = []
     for article_data in articles_data:
-        valid_fields = {k: v for k, v in article_data.items(
-        ) if k in models.Article.__table__.columns}
-        db_article = models.Article(**valid_fields)
-        db_article.id = uuid.uuid4()
+        # Filter valid fields and set defaults for missing required fields
+        valid_fields = {k: v for k, v in article_data.items() if k in models.Article.__table__.columns}
+        db_article = models.Article(id=uuid.uuid4(), **valid_fields)
+        
         db.add(db_article)
         db_articles.append(db_article)
-    db.commit()
+        
+    db.commit()  # Commit all articles at once for efficiency
     return db_articles
 
 
